@@ -73,7 +73,7 @@ public class DirectoryIdempotentRepositorySimpleTest {
     Path oldest = Files.list(repoDirectory.resolve(repoId))
             .min((Path item1, Path item2) -> {
               try {
-                return Files.getLastModifiedTime(item1).compareTo(Files.getLastModifiedTime(item2));
+                return Files.getLastModifiedTime(item2).compareTo(Files.getLastModifiedTime(item1));
               } catch (IOException e) {
                 throw new RuntimeException(e);
               }
