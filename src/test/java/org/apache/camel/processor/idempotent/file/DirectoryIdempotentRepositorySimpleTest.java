@@ -47,17 +47,14 @@ public class DirectoryIdempotentRepositorySimpleTest {
   }
 
   @Test
-  public void testCleanup() throws Exception {
+  public void testCleanupFileModifiedTime() throws Exception {
     int maxRepoSize = 10;
     long cleanupPeriod = 5000L;
-    DirectoryIdempotentRepository boundedIdempotentRepository = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod);
+    DirectoryIdempotentRepository boundedIdempotentRepository = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod, true);
     boundedIdempotentRepository.doStart();
     for (int i = 0; i < maxRepoSize * 2; ++i) {
       boundedIdempotentRepository.add(String.valueOf(i));
-      // This is needed to run this test on OS X which does not have millisecond resolution on timestamps.
-      if (System.getProperty("os.name", "").toLowerCase().contains("os x")) {
-        Thread.sleep(1001L);
-      }
+      Thread.sleep(1001L); // This is needed for filesystems that don't support millisecond mtime resolution.
     }
 
     // Give the cleanup thread some time to kick off and then clean up.
@@ -71,9 +68,43 @@ public class DirectoryIdempotentRepositorySimpleTest {
     boundedIdempotentRepository.doStop();
     Assert.assertTrue(numFiles.longValue() <= maxRepoSize);
     Path oldest = Files.list(repoDirectory.resolve(repoId))
-            .min((Path item1, Path item2) -> {
+            .max((Path item1, Path item2) -> {
               try {
                 return Files.getLastModifiedTime(item2).compareTo(Files.getLastModifiedTime(item1));
+              } catch (IOException e) {
+                throw new RuntimeException(e);
+              }
+            })
+            .get();
+    log.info(String.format("Oldest repository item: [%s].", oldest));
+    Assert.assertTrue(oldest.endsWith("10"));
+  }
+
+  @Test
+  public void testCleanupFileContentTime() throws Exception {
+    int maxRepoSize = 10;
+    long cleanupPeriod = 5000L;
+    DirectoryIdempotentRepository boundedIdempotentRepository = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod, false);
+    boundedIdempotentRepository.doStart();
+    for (int i = 0; i < maxRepoSize * 2; ++i) {
+      boundedIdempotentRepository.add(String.valueOf(i));
+      Thread.sleep(1L);
+    }
+
+    // Give the cleanup thread some time to kick off and then clean up.
+    final AtomicLong numFiles = new AtomicLong(Integer.MAX_VALUE);
+    Awaitility.await().atMost(cleanupPeriod * 2, TimeUnit.MILLISECONDS).pollInterval(1000L, TimeUnit.MILLISECONDS).until(() -> {
+      numFiles.set(Files.list(repoDirectory.resolve(repoId)).count());
+      log.info(String.format("Found %s files on this check.", numFiles));
+      return numFiles.longValue() <= maxRepoSize;
+    });
+
+    boundedIdempotentRepository.doStop();
+    Assert.assertTrue(numFiles.longValue() <= maxRepoSize);
+    Path oldest = Files.list(repoDirectory.resolve(repoId))
+            .max((Path item1, Path item2) -> {
+              try {
+                return Long.compare(Long.valueOf(new String(Files.readAllBytes(item2), DirectoryIdempotentRepository.DEFAULT_ENCODING)), Long.valueOf(new String(Files.readAllBytes(item1), DirectoryIdempotentRepository.DEFAULT_ENCODING)));
               } catch (IOException e) {
                 throw new RuntimeException(e);
               }
