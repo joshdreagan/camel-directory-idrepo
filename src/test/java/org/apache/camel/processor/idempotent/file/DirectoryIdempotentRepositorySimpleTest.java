@@ -20,18 +20,16 @@ public class DirectoryIdempotentRepositorySimpleTest {
 
   private static final Logger log = LoggerFactory.getLogger(DirectoryIdempotentRepositorySimpleTest.class);
 
-  private static Path repoDirectory;
-  private static String repoId;
+  private static Path tempDir;
 
   @BeforeClass
   public static void beforeClass() throws Exception {
-    repoDirectory = Files.createTempDirectory(DirectoryIdempotentRepositorySimpleTest.class.getSimpleName());
-    repoId = "repository";
+    tempDir = Files.createTempDirectory(DirectoryIdempotentRepositorySimpleTest.class.getSimpleName());
   }
 
   @AfterClass
   public static void afterClass() throws Exception {
-    Files.walkFileTree(repoDirectory, new SimpleFileVisitor<Path>() {
+    Files.walkFileTree(tempDir, new SimpleFileVisitor<Path>() {
       @Override
       public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
         Files.deleteIfExists(file);
@@ -47,70 +45,30 @@ public class DirectoryIdempotentRepositorySimpleTest {
   }
 
   @Test
-  public void testCleanupFileModifiedTime() throws Exception {
+  public void testCleanup() throws Exception {
+    Path repoDirectory = tempDir;
+    String repoId = Thread.currentThread().getStackTrace()[1].getMethodName();
     int maxRepoSize = 10;
-    long cleanupPeriod = 5000L;
-    DirectoryIdempotentRepository boundedIdempotentRepository = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod, true);
-    boundedIdempotentRepository.doStart();
-    for (int i = 0; i < maxRepoSize * 2; ++i) {
-      boundedIdempotentRepository.add(String.valueOf(i));
-      Thread.sleep(1001L); // This is needed for filesystems that don't support millisecond mtime resolution.
+    long cleanupPeriod = 3000L;
+    DirectoryIdempotentRepository repo = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod);
+
+    repo.start();
+    repo.add("key_-1");
+    Thread.sleep(1001L); // This is needed for filesystems that don't support millisecond mtime resolution.
+    for (int i = 0; i < repo.getMaxRepoSize(); ++i) {
+      repo.add("key_" + i);
     }
 
     // Give the cleanup thread some time to kick off and then clean up.
     final AtomicLong numFiles = new AtomicLong(Integer.MAX_VALUE);
-    Awaitility.await().atMost(cleanupPeriod * 2, TimeUnit.MILLISECONDS).pollInterval(1000L, TimeUnit.MILLISECONDS).until(() -> {
-      numFiles.set(Files.list(repoDirectory.resolve(repoId)).count());
+    Awaitility.await().atMost(repo.getCleanupPeriod() * 2, TimeUnit.MILLISECONDS).pollInterval(1L, TimeUnit.SECONDS).until(() -> {
+      numFiles.set(Files.list(repo.getRepoDirectory().resolve(repo.getRepoId())).count());
       log.info(String.format("Found %s files on this check.", numFiles));
-      return numFiles.longValue() <= maxRepoSize;
+      return numFiles.longValue() <= repo.getMaxRepoSize();
     });
+    repo.stop();
 
-    boundedIdempotentRepository.doStop();
-    Assert.assertTrue(numFiles.longValue() <= maxRepoSize);
-    Path oldest = Files.list(repoDirectory.resolve(repoId))
-            .max((Path item1, Path item2) -> {
-              try {
-                return Files.getLastModifiedTime(item2).compareTo(Files.getLastModifiedTime(item1));
-              } catch (IOException e) {
-                throw new RuntimeException(e);
-              }
-            })
-            .get();
-    log.info(String.format("Oldest repository item: [%s].", oldest));
-    Assert.assertTrue(oldest.endsWith("10"));
-  }
-
-  @Test
-  public void testCleanupFileContentTime() throws Exception {
-    int maxRepoSize = 10;
-    long cleanupPeriod = 5000L;
-    DirectoryIdempotentRepository boundedIdempotentRepository = new DirectoryIdempotentRepository(repoDirectory, repoId, maxRepoSize, cleanupPeriod, false);
-    boundedIdempotentRepository.doStart();
-    for (int i = 0; i < maxRepoSize * 2; ++i) {
-      boundedIdempotentRepository.add(String.valueOf(i));
-      Thread.sleep(1L);
-    }
-
-    // Give the cleanup thread some time to kick off and then clean up.
-    final AtomicLong numFiles = new AtomicLong(Integer.MAX_VALUE);
-    Awaitility.await().atMost(cleanupPeriod * 2, TimeUnit.MILLISECONDS).pollInterval(1000L, TimeUnit.MILLISECONDS).until(() -> {
-      numFiles.set(Files.list(repoDirectory.resolve(repoId)).count());
-      log.info(String.format("Found %s files on this check.", numFiles));
-      return numFiles.longValue() <= maxRepoSize;
-    });
-
-    boundedIdempotentRepository.doStop();
-    Assert.assertTrue(numFiles.longValue() <= maxRepoSize);
-    Path oldest = Files.list(repoDirectory.resolve(repoId))
-            .max((Path item1, Path item2) -> {
-              try {
-                return Long.compare(Long.valueOf(new String(Files.readAllBytes(item2), DirectoryIdempotentRepository.DEFAULT_ENCODING)), Long.valueOf(new String(Files.readAllBytes(item1), DirectoryIdempotentRepository.DEFAULT_ENCODING)));
-              } catch (IOException e) {
-                throw new RuntimeException(e);
-              }
-            })
-            .get();
-    log.info(String.format("Oldest repository item: [%s].", oldest));
-    Assert.assertTrue(oldest.endsWith("10"));
+    Assert.assertTrue(numFiles.longValue() <= repo.getMaxRepoSize());
+    Assert.assertFalse(repo.contains("key_-1"));
   }
 }
